@@ -1,0 +1,10 @@
+# IGNORA DIRETORIOS DE DADOS SENSIVEIS COMO A SESSAO DE LOGIN
+/data/
+
+# AMBIENTE VIRTUAL
+.venv/
+venv/
+
+# CACHE DO PYTHON
+__pycache__/
+*.pyc
