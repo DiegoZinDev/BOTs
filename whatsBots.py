@@ -1,6 +1,9 @@
+
 import random
-from playwright.sync_api import sync_playwright 
+import re
 import time
+from playwright.sync_api import sync_playwright
+
 
 nome_grupo = "Loucos Por Perfume #1"
 cookies = "./data/sessao"
@@ -9,6 +12,9 @@ link_grupo = "L7F2OedGjnJ9Z675wQ6UWX"
 links_promo = [
 
 ]
+
+
+
 
 
 def iniciar_zap():
@@ -21,18 +27,24 @@ def iniciar_zap():
         
         page = context.pages[0] if context.pages else context.new_page()
         
-        print("abrindo convite")
-        page.goto(f"https://chat.whatsapp.com/{link_grupo}")
+        print("abrindo whatsapp")
+        page.goto("https://web.whatsapp.com")
+        
+        def type_in_chat():
+            input_box = page.locator('#main [contenteditable="true"]')
+            input_box.wait_for(state="visible", timeout=10000)
+            input_box.press_sequentially("Bora começar", delay=random.randint(30, 100))
+            input_box.press("Enter")
 
+        print("abrindo primeira conversa")
+        page.wait_for_selector('#pane-side [role="row"]', state="visible", timeout=20000)
+        page.locator('#pane-side [role="row"]').first.click()
+        type_in_chat()
 
+        time.sleep(1000)
 
-        botão_entrar = page.get_by_role("link", name=re.compile(r"Continua para o WhatsApp Web", re.IGNORECASE))
-        button_entar.wait_for(timeout=10000)
-        buttonm_entrar.click()
-        print("clicando no botao de convite!")
-
-        time.sleep(100)
-
+            
+    
 if __name__ == "__main__":
     iniciar_zap()
         
