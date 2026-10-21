@@ -1,0 +1,104 @@
+================================================================================
+GUIA E CRITERIOS DE SELECAO DE PRODUTOS PARA AFILIADOS (AMAZON / WHATSAPP)
+================================================================================
+
+Este guia reúne as principais características que tornam um produto "referência"
+e com alto potencial de conversão para divulgação em grupos de ofertas no WhatsApp,
+com foco especial no nicho de perfumaria e importados.
+
+--------------------------------------------------------------------------------
+1. PROVA SOCIAL & GATILHOS DE MANADA
+--------------------------------------------------------------------------------
+* Vendas Recentes ("Mais de X compras no mês passado"):
+  - A Amazon exibe etiquetas como "Mais de 1 mil compras no mês passado" ou
+    "Mais de 500 compras no mês passado".
+  - Esse é um dos maiores gatilhos psicológicos de validação social. Se muitas
+    pessoas estão comprando agora, o lead sente segurança imediata para comprar.
+
+* Nota Média (Estrelas):
+  - Mínimo recomendado: 4.3 a 4.5+ estrelas.
+  - Evite produtos abaixo de 4.0, pois geram reclamações pós-venda no grupo.
+
+* Volume Absoluto de Avaliações:
+  - Uma nota 4.8 com apenas 10 avaliações passa menos confiança do que uma nota 4.5
+    com mais de 2.000 avaliações.
+  - Para afiliados, foque em produtos com no mínimo 100 a 500+ avaliações.
+
+--------------------------------------------------------------------------------
+2. LOGISTICA E CONFIABILIDADE (FATOR CRÍTICO EM PERFUMARIA)
+--------------------------------------------------------------------------------
+No nicho de perfumes importados, o maior obstáculo de compra é o medo de falsificação.
+
+* "Enviado pela Amazon" (FBA) ou "Vendido e entregue pela Amazon":
+  - Elimina praticamente 100% da desconfiança de pirataria.
+  - Evite divulgar itens de vendedores terceiros desconhecidos sem histórico.
+
+* Selo Amazon Prime:
+  - Frete grátis e entrega rápida (1 a 2 dias).
+  - Assinantes Prime compram por impulso quando não precisam pagar frete.
+
+* Origem Nacional (Evitar "Compra Internacional"):
+  - Produtos com cobrança de taxa alfandegária ou prazo de entrega longo (20 a 40 dias)
+    geram atrito, cancelamento e devoluções. Priorize estoque no Brasil.
+
+--------------------------------------------------------------------------------
+3. SELOS E BADGES OFICIAIS DA AMAZON
+--------------------------------------------------------------------------------
+Produtos com destaque visual nos resultados de busca aumentam os cliques:
+
+* "Mais Vendido" (#1 Best Seller):
+  - Transmite liderança de mercado e consolidação da marca.
+
+* "Escolha da Amazon" (Amazon's Choice):
+  - Indica itens bem avaliados, com bom preço e pronta entrega.
+
+* "Oferta do Dia" / "Oferta Relâmpago" / "Cupom Aplicável":
+  - Em grupos de promoções, o público entra esperando oportunidade e desconto real.
+
+--------------------------------------------------------------------------------
+4. FAIXA DE PREÇO & DESCONTO PERCEBIDO
+--------------------------------------------------------------------------------
+* Desconto Visual (% OFF):
+  - Destaque o preço "De / Por" (exemplo: De R$ 350 por R$ 219 - 37% OFF).
+  - O comprador sente que está economizando de verdade.
+
+* Estratégia de Preço no nicho de Perfumes:
+  - Faixa R$ 120 a R$ 350 (Compra por impulso / Giro rápido):
+    Perfumes de entrada e custo-benefício (ex: Nautica Voyage, Antonio Banderas,
+    Ferrari Black, Calvin Klein, Joop!). Maior volume de vendas.
+  - Faixa R$ 400 a R$ 900+ (Desejo aspiracional / Ticket alto):
+    Sauvage Dior, Bleu de Chanel, 1 Million, Invictus. Convertem melhor quando
+    estão com descontos agressivos ou cupons especiais.
+
+--------------------------------------------------------------------------------
+5. O "FILTRO DE OURO" PARA O BOT (CHECKLIST)
+--------------------------------------------------------------------------------
+[x] Avaliação: 4.3 ⭐ ou mais
+[x] Qtd. de Avaliações: 200+
+[x] Vendas Recentes: "Mais de 100/500/1k comprados no mês passado"
+[x] Entrega: Elegível para Amazon Prime / Enviado pela Amazon
+[x] Origem: Estoque Nacional
+[x] Oportunidade: Preço promocional ou com selo de Oferta
+
+--------------------------------------------------------------------------------
+6. REFERENCIA DE SELETORES (PLAYWRIGHT) PARA O SCRAPING
+--------------------------------------------------------------------------------
+- Container do produto:
+  div[data-component-type="s-search-result"]
+
+- Selo "Mais Vendido":
+  span.a-badge-text
+
+- Vendas recentes:
+  span:has-text("compras no mês passado")
+
+- Selo Prime:
+  i.a-icon-prime
+
+- Preço com desconto:
+  span.a-price span.a-offscreen (preço atual)
+  span.a-text-price span.a-offscreen (preço original / riscado)
+
+- Título e Link do produto:
+  h2 a
+================================================================================

@@ -1,7 +1,8 @@
+
 import random
-from playwright.sync_api import sync_playwright 
-import time
 import re
+import time
+from playwright.sync_api import sync_playwright
 
 
 nome_grupo = "Loucos Por Perfume #1"
@@ -10,6 +11,10 @@ cookies = "./data/sessao"
 links_promo = [
 
 ]
+
+
+
+
 
 def iniciar_zap():
     with sync_playwright() as p:
@@ -20,21 +25,25 @@ def iniciar_zap():
         )
         
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(f"https://web.whatsapp.com/")
-        # espera a lista de conversas carregar (tempo longo caso precise escanear o QR Code)
-        page.wait_for_selector("#pane-side", timeout=60000)
-
-        primeira_conversa = page.locator(
-            '#pane-side [role="listitem"], #pane-side [role="row"]'
-        ).first
         
-        primeira_conversa.click()
-        print("primeira conversa aberta!")
-
+        print("abrindo whatsapp")
+        page.goto("https://web.whatsapp.com")
         
+        def type_in_chat():
+            input_box = page.locator('#main [contenteditable="true"]')
+            input_box.wait_for(state="visible", timeout=10000)
+            input_box.press_sequentially("Bora começar", delay=random.randint(30, 100))
+            input_box.press("Enter")
 
-        time.sleep(100)
+        print("abrindo primeira conversa")
+        page.wait_for_selector('#pane-side [role="row"]', state="visible", timeout=20000)
+        page.locator('#pane-side [role="row"]').first.click()
+        type_in_chat()
 
+        time.sleep(1000)
+
+            
+    
 if __name__ == "__main__":
     iniciar_zap()
         
