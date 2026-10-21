@@ -1,15 +1,15 @@
 import random
 from playwright.sync_api import sync_playwright 
 import time
+import re
+
 
 nome_grupo = "Loucos Por Perfume #1"
 cookies = "./data/sessao"
-link_grupo = "L7F2OedGjnJ9Z675wQ6UWX"
 
 links_promo = [
 
 ]
-
 
 def iniciar_zap():
     with sync_playwright() as p:
@@ -20,16 +20,18 @@ def iniciar_zap():
         )
         
         page = context.pages[0] if context.pages else context.new_page()
+        page.goto(f"https://web.whatsapp.com/")
+        # espera a lista de conversas carregar (tempo longo caso precise escanear o QR Code)
+        page.wait_for_selector("#pane-side", timeout=60000)
+
+        primeira_conversa = page.locator(
+            '#pane-side [role="listitem"], #pane-side [role="row"]'
+        ).first
         
-        print("abrindo convite")
-        page.goto(f"https://chat.whatsapp.com/{link_grupo}")
+        primeira_conversa.click()
+        print("primeira conversa aberta!")
 
-
-
-        botão_entrar = page.get_by_role("link", name=re.compile(r"Continua para o WhatsApp Web", re.IGNORECASE))
-        button_entar.wait_for(timeout=10000)
-        buttonm_entrar.click()
-        print("clicando no botao de convite!")
+        
 
         time.sleep(100)
 
