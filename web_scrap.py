@@ -54,6 +54,41 @@ def limpar_qtd_avaliacoes(texto: str) -> int | None:
     return int(digitos) if digitos else None
 
 
+# Palavras que confirmam que o produto é uma fragrância/perfume
+TERMOS_POSITIVOS_PERFUME = [
+    "perfume", "eau de parfum", "eau de toilette", "eau de cologne",
+    " edp", " edt", " edc", "colônia", "colonia", "deo colônia", "deo colonia",
+    "fragrância", "fragrancia", "fragrance", "parfum"
+]
+
+# Itens que a Amazon costuma misturar na busca e que DEVEM ser descartados
+TERMOS_NEGATIVOS_PERFUME = [
+    "shampoo", "condicionador", "sabonete", "desodorante", "antitranspirante",
+    "creme corporal", "loção corporal", "locao corporal", "hidratante",
+    "barbeador", "aparador", "escova", "difusor", "aromatizador",
+    "vela aromática", "vela aromatica", "óleo essencial", "oleo essencial",
+    "porta perfume", "porta-perfume", "frasco vazio", "atomizador recarregável", "atomizador recarregavel"
+]
+
+
+def eh_perfume(titulo: str, card_texto: str = "") -> bool:
+    """Verifica se o item é legitimamente um perfume/fragrância e descarta produtos aleatórios."""
+    alvo = f"{titulo} {card_texto}".lower()
+
+    # 1. Se tiver termos estritamente indesejados (frascos vazios, shampoos, eletrônicos, etc.)
+    for negativo in TERMOS_NEGATIVOS_PERFUME:
+        if negativo in alvo:
+            return False
+
+    # 2. Precisa conter ao menos um termo característico de perfume
+    for positivo in TERMOS_POSITIVOS_PERFUME:
+        if positivo in alvo:
+            return True
+
+    return False
+
+
+
 
 def extrair_dados_card(card) -> dict | None:
     """Extrai todas as informações de um card de produto no resultado de busca."""
@@ -145,8 +180,11 @@ def extrair_dados_card(card) -> dict | None:
         return None
 
 
-def raspar_busca(termo_busca: str):
-    """Abre a busca na Amazon, coleta os produtos e insere no banco de dados."""
+def raspar_busca(termo_busca: str, max_paginas: int = 10):
+    """
+    Abre a busca na Amazon, coleta os produtos página por página
+    até atingir `max_paginas` (padrão 10) ou acabar os resultados.
+    """
     init_db()
 
     with sync_playwright() as p:
@@ -170,57 +208,100 @@ def raspar_busca(termo_busca: str):
         barra_pesquisa.press_sequentially(termo_busca, delay=random.randint(20, 60))
         barra_pesquisa.press("Enter")
 
-        # Aguarda os resultados
-        selector_card = 'div[data-component-type="s-search-result"]'
-        page.wait_for_selector(selector_card, state="visible", timeout=15000)
-
-        # Rola a página suavemente para forçar o carregamento de imagens (lazy load)
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
-        time.sleep(1)
-        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-        time.sleep(1)
-
         # Carrega os ASINs que já estão no banco para não processar nem poluir o banco
         asins_existentes = obter_asins_cadastrados()
         print(f"Total de produtos já cadastrados no banco: {len(asins_existentes)}")
 
-        cards = page.locator(selector_card)
-        total_cards = cards.count()
-        print(f"Encontrados {total_cards} cards de produtos na página!\n")
+        selector_card = 'div[data-component-type="s-search-result"]'
+        novos_inseridos_total = 0
+        pulados_total = 0
+        nao_perfumes_total = 0
 
-        novos_inseridos = 0
-        pulados = 0
+        for pagina_atual in range(1, max_paginas + 1):
+            print(f"\n==========================================")
+            print(f"📖 Processando Página {pagina_atual} de {max_paginas}...")
+            print(f"==========================================")
 
-        for i in range(total_cards):
-            card = cards.nth(i)
-            asin = card.get_attribute("data-asin")
+            # Aguarda os resultados da página carregarem
+            page.wait_for_selector(selector_card, state="visible", timeout=20000)
 
-            if not asin or len(asin.strip()) == 0:
-                continue
+            # Rola a página suavemente para carregar imagens e o rodapé com paginação
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight / 2)")
+            time.sleep(1)
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            time.sleep(1.5)
 
-            # Se o produto já foi pego antes, pula imediatamente sem gastar processamento
-            if asin in asins_existentes:
-                pulados += 1
-                print(f"⏩ [Já cadastrado]: ASIN {asin} já está no banco. Pulando...")
-                continue
+            cards = page.locator(selector_card)
+            total_cards = cards.count()
+            print(f"Encontrados {total_cards} cards de produtos na página {pagina_atual}!\n")
 
-            # Extrai apenas produtos novos
-            dados = extrair_dados_card(card)
+            novos_na_pagina = 0
+            pulados_na_pagina = 0
 
-            if dados:
-                sucesso = salvar_produto(dados)
-                if sucesso:
-                    novos_inseridos += 1
-                    asins_existentes.add(asin)  # Registra no set para evitar repetições na mesma página
-                    desconto_str = f"({dados['desconto_pct']}% OFF)" if dados['desconto_pct'] > 0 else ""
-                    nota_str = f"⭐ {dados['avaliacao_nota']}" if dados['avaliacao_nota'] else "S/Nota"
-                    badge_str = f"[{dados['badge']}]" if dados['badge'] else ""
-                    print(f"✨ [Novo Salvo]: {dados['titulo'][:40]}... | R$ {dados['preco_atual']} {desconto_str} | {nota_str} {badge_str}")
+            for i in range(total_cards):
+                card = cards.nth(i)
+                asin = card.get_attribute("data-asin")
+
+                if not asin or len(asin.strip()) == 0:
+                    continue
+
+                # Se o produto já foi pego antes, pula imediatamente sem gastar processamento
+                if asin in asins_existentes:
+                    pulados_na_pagina += 1
+                    pulados_total += 1
+                    print(f"⏩ [Já cadastrado]: ASIN {asin} já está no banco. Pulando...")
+                    continue
+
+                # Extrai os dados do card
+                dados = extrair_dados_card(card)
+
+                if dados:
+                    # Filtro de Nicho: descarta produtos que não sejam fragrâncias/perfumes
+                    card_texto = card.inner_text()
+                    if not eh_perfume(dados["titulo"], card_texto):
+                        nao_perfumes_total += 1
+                        print(f"🚫 [Descartado - Não é perfume]: {dados['titulo'][:45]}...")
+                        continue
+
+                    sucesso = salvar_produto(dados)
+                    if sucesso:
+                        novos_na_pagina += 1
+                        novos_inseridos_total += 1
+                        asins_existentes.add(asin)  # Registra no set para evitar repetições
+                        desconto_str = f"({dados['desconto_pct']}% OFF)" if dados['desconto_pct'] > 0 else ""
+                        nota_str = f"⭐ {dados['avaliacao_nota']}" if dados['avaliacao_nota'] else "S/Nota"
+                        badge_str = f"[{dados['badge']}]" if dados['badge'] else ""
+                        print(f"✨ [Novo Salvo]: {dados['titulo'][:40]}... | R$ {dados['preco_atual']} {desconto_str} | {nota_str} {badge_str}")
+
+            print(f"\n--> Resumo Página {pagina_atual}: +{novos_na_pagina} novos salvos | {pulados_na_pagina} pulados")
+
+            # Se atingiu o limite de páginas estipulado, para por aqui
+            if pagina_atual >= max_paginas:
+                print(f"🛑 Limite de {max_paginas} páginas atingido com sucesso.")
+                break
+
+            # Localiza o botão 'Próximo' (na Amazon é a tag <a> com classe s-pagination-next)
+            btn_proximo = page.locator("a.s-pagination-next, a[aria-label*='próxima página'], a:has-text('Próximo')").first
+
+            # Se o botão não existir ou for um <span> desabilitado, significa que é a última página
+            if btn_proximo.count() == 0 or not btn_proximo.is_visible():
+                print("🛑 Botão 'Próximo' não disponível. Chegamos ao fim dos resultados na Amazon.")
+                break
+
+            classes = btn_proximo.get_attribute("class") or ""
+            if "s-pagination-disabled" in classes:
+                print("🛑 Última página da Amazon atingida.")
+                break
+
+            print(f"➡️ Navegando para a página {pagina_atual + 1}...")
+            btn_proximo.click()
+            time.sleep(random.uniform(2, 3.5))  # Pausa humanizada entre páginas
 
         print("\n==========================================")
-        print(f"Relatório da busca '{termo_busca}':")
-        print(f" - Novos produtos adicionados: {novos_inseridos}")
-        print(f" - Produtos repetidos pulados: {pulados}")
+        print(f"Relatório Final da busca '{termo_busca}':")
+        print(f" - Total de novos perfumes adicionados: {novos_inseridos_total}")
+        print(f" - Total de produtos repetidos pulados: {pulados_total}")
+        print(f" - Itens aleatórios descartados (não perfumes): {nao_perfumes_total}")
         stats = total_produtos()
         print(f" - Situação geral do banco: {stats}")
         print("==========================================\n")
@@ -229,5 +310,5 @@ def raspar_busca(termo_busca: str):
 
 
 if __name__ == "__main__":
-    # Executa a busca para o primeiro termo configurado
-    raspar_busca("perfumes masculinos importados")
+    # Executa a busca paginando até a página 10
+    raspar_busca("perfumes masculinos importados", max_paginas=10)
