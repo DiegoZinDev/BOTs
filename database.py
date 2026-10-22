@@ -94,15 +94,20 @@ def salvar_produto(produto: dict) -> bool:
         return False
 
 
-def obter_proxima_oferta(filtro_ouro: bool = True):
+def obter_proxima_oferta(filtro_ouro: bool = True, intervalo_dias: int = 2):
     """
-    Retorna a melhor oferta pendente de postagem.
-    Se filtro_ouro=True, aplica os critérios mínimos de conversão:
+    Retorna a melhor oferta elegível para postagem.
+    Regra de Cooldown:
+      - Só seleciona produtos nunca postados (data_ultima_postagem IS NULL)
+      - OU produtos postados há mais de `intervalo_dias` (ex: 2 dias atrás).
+    Se filtro_ouro=True, aplica os critérios de conversão:
       - Nota >= 4.3
       - Avaliações >= 100
-      - Desconto >= 10% OU selo de destaque (Mais Vendido / Escolha da Amazon / Vendas no mês)
+      - Desconto >= 10% OU selo de destaque
     """
-    condicoes = ["postado = 0"]
+    condicoes = [
+        f"(data_ultima_postagem IS NULL OR data_ultima_postagem <= datetime('now', '-{intervalo_dias} days', 'localtime'))"
+    ]
     
     if filtro_ouro:
         condicoes.append("avaliacao_nota >= 4.3")
@@ -114,7 +119,8 @@ def obter_proxima_oferta(filtro_ouro: bool = True):
     SELECT * FROM produtos_ofertas
     WHERE {where_clause}
     ORDER BY 
-        CASE WHEN badge = 'Mais vendido' THEN 1 ELSE 2 END,
+        CASE WHEN data_ultima_postagem IS NULL THEN 0 ELSE 1 END,
+        CASE WHEN badge = 'Mais vendido' OR badge = '1º Mais Vendido' THEN 1 ELSE 2 END,
         desconto_pct DESC,
         avaliacao_qtd DESC
     LIMIT 1;
@@ -140,13 +146,13 @@ def marcar_como_postado(asin: str):
         conn.commit()
 
 
-def total_produtos():
-    """Retorna estatísticas rápidas do banco."""
-    query = """
+def total_produtos(intervalo_dias: int = 2):
+    """Retorna estatísticas rápidas do banco considerando o intervalo de dias."""
+    query = f"""
     SELECT 
         COUNT(*) as total,
-        COALESCE(SUM(CASE WHEN postado = 0 THEN 1 ELSE 0 END), 0) as pendentes,
-        COALESCE(SUM(CASE WHEN postado = 1 THEN 1 ELSE 0 END), 0) as postados
+        COALESCE(SUM(CASE WHEN data_ultima_postagem IS NULL OR data_ultima_postagem <= datetime('now', '-{intervalo_dias} days', 'localtime') THEN 1 ELSE 0 END), 0) as disponiveis,
+        COALESCE(SUM(CASE WHEN data_ultima_postagem IS NOT NULL AND data_ultima_postagem > datetime('now', '-{intervalo_dias} days', 'localtime') THEN 1 ELSE 0 END), 0) as em_cooldown
     FROM produtos_ofertas;
     """
     with get_connection() as conn:
@@ -155,7 +161,16 @@ def total_produtos():
         return dict(cursor.fetchone())
 
 
+def obter_asins_cadastrados() -> set[str]:
+    """Retorna um conjunto (set) com todos os ASINs que já estão no banco de dados."""
+    with get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT asin FROM produtos_ofertas;")
+        return {row["asin"] for row in cursor.fetchall()}
+
+
 if __name__ == "__main__":
     init_db()
     stats = total_produtos()
     print(f"Status do banco: {stats}")
+    print(f"Total de ASINs cadastrados: {len(obter_asins_cadastrados())}")

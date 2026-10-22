@@ -1,8 +1,12 @@
 import re
+import sys
 import random
 import time
 from playwright.sync_api import sync_playwright
-from database import init_db, salvar_produto, total_produtos
+from database import init_db, salvar_produto, total_produtos, obter_asins_cadastrados
+
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
 
 # Configurações do Afiliado e Busca
 TAG_AFILIADO = "diego07306-20"  # Sua tag oficial de associado Amazon
@@ -176,27 +180,50 @@ def raspar_busca(termo_busca: str):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1)
 
+        # Carrega os ASINs que já estão no banco para não processar nem poluir o banco
+        asins_existentes = obter_asins_cadastrados()
+        print(f"Total de produtos já cadastrados no banco: {len(asins_existentes)}")
+
         cards = page.locator(selector_card)
         total_cards = cards.count()
-        print(f"Encontrados {total_cards} produtos na página!")
+        print(f"Encontrados {total_cards} cards de produtos na página!\n")
 
-        inseridos = 0
+        novos_inseridos = 0
+        pulados = 0
+
         for i in range(total_cards):
             card = cards.nth(i)
+            asin = card.get_attribute("data-asin")
+
+            if not asin or len(asin.strip()) == 0:
+                continue
+
+            # Se o produto já foi pego antes, pula imediatamente sem gastar processamento
+            if asin in asins_existentes:
+                pulados += 1
+                print(f"⏩ [Já cadastrado]: ASIN {asin} já está no banco. Pulando...")
+                continue
+
+            # Extrai apenas produtos novos
             dados = extrair_dados_card(card)
 
             if dados:
                 sucesso = salvar_produto(dados)
                 if sucesso:
-                    inseridos += 1
+                    novos_inseridos += 1
+                    asins_existentes.add(asin)  # Registra no set para evitar repetições na mesma página
                     desconto_str = f"({dados['desconto_pct']}% OFF)" if dados['desconto_pct'] > 0 else ""
                     nota_str = f"⭐ {dados['avaliacao_nota']}" if dados['avaliacao_nota'] else "S/Nota"
                     badge_str = f"[{dados['badge']}]" if dados['badge'] else ""
-                    print(f"[{inseridos}] Salvo: {dados['titulo'][:40]}... | R$ {dados['preco_atual']} {desconto_str} | {nota_str} {badge_str}")
+                    print(f"✨ [Novo Salvo]: {dados['titulo'][:40]}... | R$ {dados['preco_atual']} {desconto_str} | {nota_str} {badge_str}")
 
-        print(f"\nColeta concluída para '{termo_busca}': {inseridos} produtos salvos/atualizados.")
+        print("\n==========================================")
+        print(f"Relatório da busca '{termo_busca}':")
+        print(f" - Novos produtos adicionados: {novos_inseridos}")
+        print(f" - Produtos repetidos pulados: {pulados}")
         stats = total_produtos()
-        print(f"Estatísticas atuais do Banco de Dados: {stats}\n")
+        print(f" - Situação geral do banco: {stats}")
+        print("==========================================\n")
 
         context.close()
 

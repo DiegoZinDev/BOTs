@@ -55,30 +55,64 @@ def formatar_mensagem_oferta(p: dict) -> str:
 
 
 
+import sys
+
+# Garante suporte a emojis no terminal Windows
+if sys.platform == "win32":
+    sys.stdout.reconfigure(encoding="utf-8")
+
+
 def iniciar_zap():
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=cookies,
             headless=False,
-            slow_mo=500
+            slow_mo=300
         )
         
         page = context.pages[0] if context.pages else context.new_page()
         
-        print("abrindo whatsapp")
+        print("Abrindo WhatsApp Web...")
         page.goto("https://web.whatsapp.com")
         
         def type_in_chat():
-            input_box = page.locator('#main [contenteditable="true"]')
-            input_box.wait_for(state="visible", timeout=10000)
-            input_box.press_sequentially("Bora começar", delay=random.randint(30, 100))
-            input_box.press("Enter")
+            # Busca a melhor oferta que nunca foi postada OU postada há mais de 2 dias
+            oferta = obter_proxima_oferta(filtro_ouro=True, intervalo_dias=2)
+            if not oferta:
+                print("Nenhuma oferta disponível no momento. Todas já foram postadas nos últimos 2 dias!")
+                return
 
-        print("abrindo primeira conversa")
-        page.wait_for_selector('#pane-side [role="row"]', state="visible", timeout=20000)
+            print(f"\n[OFERTA SELECIONADA]: {oferta['titulo']}")
+            texto_mensagem = formatar_mensagem_oferta(oferta)
+
+            input_box = page.locator('#main [contenteditable="true"]')
+            input_box.wait_for(state="visible", timeout=15000)
+            input_box.click()
+            time.sleep(1)
+
+            # Insere o texto completo instantaneamente (como Ctrl+V humano)
+            page.keyboard.insert_text(texto_mensagem)
+            
+            # Aguarda 2 segundos para o WhatsApp carregar a prévia do link da Amazon
+            time.sleep(2)
+
+            # Envia a mensagem
+            input_box.press("Enter")
+            print("Mensagem enviada com sucesso no grupo!")
+
+            # Registra no banco de dados para bloquear repetição por 2 dias
+            marcar_como_postado(oferta["asin"])
+            print(f"Produto {oferta['asin']} bloqueado para repostagem pelos próximos 2 dias.")
+
+        print("Aguardando carregamento das conversas...")
+        page.wait_for_selector('#pane-side [role="row"]', state="visible", timeout=30000)
+        
+        print("Abrindo a conversa...")
         page.locator('#pane-side [role="row"]').first.click()
+        time.sleep(1)
         type_in_chat()
 
+        print("\nProcesso finalizado. Aguardando...")
         time.sleep(1000)
 
             
