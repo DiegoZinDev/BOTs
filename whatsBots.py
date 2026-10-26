@@ -230,24 +230,33 @@ def iniciar_zap():
                         # 4. Aguarda a tela de prévia da foto abrir
                         time.sleep(2.5)
 
-                        # 5. Localiza a caixa de legenda específica da mídia (media-caption-input-container)
-                        caption_box = page.locator('[data-testid="media-caption-input-container"] [contenteditable="true"]').first
+                        # 5. Localiza a caixa de legenda específica da mídia
+                        caption_box = page.locator('div[data-testid="media-caption-input-container"], div[contenteditable="true"][aria-label="Digite uma mensagem"]').first
                         if caption_box.count() == 0:
                             for ed in page.locator('div[contenteditable="true"]').all():
                                 if ed.get_attribute("data-testid") != "conversation-compose-box-input":
                                     caption_box = ed
                                     break
 
-                        if not caption_box or caption_box.count() == 0:
-                            caption_box = page.locator('div[contenteditable="true"][aria-label="Digite uma mensagem"]').first
-
                         caption_box.wait_for(state="visible", timeout=10000)
                         caption_box.focus()
                         caption_box.click(force=True)
                         time.sleep(0.5)
 
-                        # 6. Insere a mensagem completa da oferta NA LEGENDA DA FOTO
-                        page.keyboard.insert_text(texto_mensagem)
+                        # Limpa qualquer rascunho anterior no campo
+                        page.keyboard.press("Control+a")
+                        page.keyboard.press("Backspace")
+                        time.sleep(0.3)
+
+                        # 6. Insere a mensagem completa da oferta NA LEGENDA DA FOTO com Shift+Enter
+                        # (O Enter comum ou quebras \n no insert_text disparam o envio prematuro no WhatsApp Web)
+                        linhas_msg = texto_mensagem.split("\n")
+                        for idx_l, linha_txt in enumerate(linhas_msg):
+                            if linha_txt:
+                                page.keyboard.insert_text(linha_txt)
+                            if idx_l < len(linhas_msg) - 1:
+                                page.keyboard.press("Shift+Enter")
+
                         time.sleep(1.5)
 
                         # 7. Envia a foto COM a legenda junta (mensagem única)
