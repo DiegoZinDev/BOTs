@@ -1,12 +1,18 @@
 import os
 import re
 import sys
+import tempfile
 import time
 import urllib.request
 from datetime import datetime, timedelta
 from playwright.sync_api import sync_playwright
 
-from database import obter_proxima_oferta, marcar_como_postado
+from database import (
+    obter_proxima_oferta,
+    marcar_como_postado,
+    salvar_imagem_blob,
+    obter_imagem_blob,
+)
 
 # Garante suporte a emojis no terminal Windows
 if sys.platform == "win32":
@@ -72,11 +78,11 @@ def buscar_imagem_lifestyle_amazon(asin: str, context=None) -> str | None:
     """
     if not context:
         return None
+    page = None
     try:
         page = context.new_page()
-        page.goto(f"https://www.amazon.com.br/dp/{asin}", timeout=15000)
+        page.goto(f"https://www.amazon.com.br/dp/{asin}", timeout=8000)
         imgs = page.locator('#altImages ul li img').evaluate_all('els => els.map(e => e.src)')
-        page.close()
 
         urls_validas = []
         for src in imgs:
@@ -96,27 +102,34 @@ def buscar_imagem_lifestyle_amazon(asin: str, context=None) -> str | None:
             return urls_validas[0]
     except Exception as e:
         print(f"⚠️ Erro ao buscar galeria na Amazon ({e}).")
+    finally:
+        if page:
+            try:
+                page.close()
+            except Exception:
+                pass
     return None
 
 
-def baixar_imagem_produto(asin: str, imagem_url_padrao: str, context=None) -> str | None:
+def obter_ou_baixar_imagem_blob(asin: str, imagem_url_padrao: str, context=None) -> bytes | None:
     """
-    Baixa a imagem mais atraente do produto para ./data/imagens/{asin}.jpg e retorna o caminho absoluto.
+    Recupera a imagem do produto salva no banco de dados SQLite (MEDIUMBLOB).
+    Caso ainda não esteja no banco, faz a busca na galeria da Amazon ou na URL oficial,
+    baixa diretamente para a memória e salva no banco de dados SQLite.
     """
-    pasta_imagens = os.path.abspath(os.path.join(os.path.dirname(__file__), "data", "imagens"))
-    os.makedirs(pasta_imagens, exist_ok=True)
-    caminho_local = os.path.join(pasta_imagens, f"{asin}.jpg")
+    # 1. Verifica se já está guardada no banco de dados SQLite
+    blob = obter_imagem_blob(asin)
+    if blob and len(blob) > 1000:
+        print(f"📦 Imagem do produto {asin} recuperada diretamente do banco SQLite ({len(blob)} bytes).")
+        return blob
 
-    # Se já foi baixada com sucesso, reutiliza do cache local
-    if os.path.exists(caminho_local) and os.path.getsize(caminho_local) > 5000:
-        return caminho_local
-
+    # 2. Se não estiver no banco, busca fotos de ambientação/lifestyle na Amazon
     url_final = None
     if context:
-        print(f"🔍 Buscando fotos de ambientação/lifestyle na Amazon para {asin}...")
+        print(f"🔍 Buscando foto de ambientação/lifestyle na Amazon para {asin}...")
         url_final = buscar_imagem_lifestyle_amazon(asin, context)
 
-    # Se não houver galeria, usa a imagem principal em ultra alta resolução
+    # 3. Fallback para a imagem principal em ultra alta resolução
     if not url_final and imagem_url_padrao:
         url_final = obter_url_alta_resolucao(imagem_url_padrao)
 
@@ -128,19 +141,26 @@ def baixar_imagem_produto(asin: str, imagem_url_padrao: str, context=None) -> st
             url_final,
             headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
         )
-        with urllib.request.urlopen(req, timeout=15) as resp, open(caminho_local, "wb") as f:
-            f.write(resp.read())
-        print(f"📸 Imagem atraente baixada com sucesso ({os.path.getsize(caminho_local)} bytes): {os.path.basename(caminho_local)}")
-        return caminho_local
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = resp.read()
+
+        if data and len(data) > 1000:
+            # Salva os bytes diretamente no banco de dados SQLite (MEDIUMBLOB)
+            salvar_imagem_blob(asin, data)
+            print(f"💾 Foto salva no banco de dados SQLite (MEDIUMBLOB, {len(data)} bytes) para {asin}!")
+            return data
     except Exception as e:
-        print(f"⚠️ Falha no download da imagem em alta resolução ({e}).")
+        print(f"⚠️ Falha no download da imagem ({e}).")
         if imagem_url_padrao and url_final != imagem_url_padrao:
             try:
-                urllib.request.urlretrieve(imagem_url_padrao, caminho_local)
-                return caminho_local
+                with urllib.request.urlopen(imagem_url_padrao, timeout=15) as resp:
+                    data = resp.read()
+                if data and len(data) > 1000:
+                    salvar_imagem_blob(asin, data)
+                    return data
             except Exception:
                 pass
-        return None
+    return None
 
 
 def iniciar_zap():
@@ -169,15 +189,16 @@ def iniciar_zap():
 
                 enviou_com_imagem = False
 
-                # 1. Baixa a foto bonita/atraente do produto antes de postar
-                caminho_imagem = baixar_imagem_produto(
+                # 1. Obtém os bytes da imagem do produto (do banco SQLite ou baixa e salva no banco)
+                imagem_bytes = obter_ou_baixar_imagem_blob(
                     asin=oferta["asin"],
                     imagem_url_padrao=oferta.get("imagem_url"),
                     context=context
                 )
 
-                # 2. Se a imagem foi baixada, envia como FOTO com o texto na LEGENDA (mensagem única)
-                if caminho_imagem and os.path.exists(caminho_imagem):
+                # 2. Se temos a imagem em bytes, envia como FOTO com o texto na LEGENDA (mensagem única)
+                if imagem_bytes:
+                    caminho_temp = None
                     try:
                         print("📤 Anexando foto do produto com o texto da oferta na legenda...")
                         
@@ -185,62 +206,83 @@ def iniciar_zap():
                             page.locator('#pane-side [role="row"]').first.click()
                             time.sleep(1)
 
-                        # Procura o input de Fotos e vídeos (que aceita vídeo e imagem, nunca figurinha)
-                        input_fotos = page.locator('input[accept*="video"], input[accept*="quicktime"]').first
+                        # Cria um arquivo temporário descartável apenas para upload via navegador
+                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                            tmp.write(imagem_bytes)
+                            caminho_temp = tmp.name
 
-                        if input_fotos.count() == 0:
-                            # Abre o menu de anexos (+)
-                            btn_anexar = page.locator('button[aria-label*="Anexar"], button[title*="Anexar"], span[data-icon="plus"]').first
-                            if btn_anexar.is_visible():
-                                btn_anexar.click()
-                                time.sleep(1)
-                                input_fotos = page.locator('input[accept*="video"], input[accept*="quicktime"]').first
+                        # 1. Abre o menu de anexos (+) se necessário
+                        btn_anexar = page.locator('#main footer button[aria-label*="Anexar"], #main footer button[title*="Anexar"], #main footer span[data-icon="plus"]').first
+                        if btn_anexar.is_visible():
+                            btn_anexar.click()
+                            time.sleep(1)
 
-                        if input_fotos.count() > 0:
-                            input_fotos.set_input_files(caminho_imagem)
-                        else:
-                            # Clica no item "Fotos e vídeos" via expect_file_chooser
-                            item_fotos = page.locator('li, [role="button"], button').filter(has_text=re.compile(r"Fotos|Photos", re.I)).first
-                            with page.expect_file_chooser(timeout=7000) as fc_info:
-                                item_fotos.click()
-                            file_chooser = fc_info.value
-                            file_chooser.set_files(caminho_imagem)
+                        # 2. Localiza o botão "Fotos e vídeos" no menu
+                        item_fotos = page.locator('button').filter(has_text=re.compile(r"Fotos e v[ií]deos|Photos & videos", re.I)).first
+                        item_fotos.wait_for(state="visible", timeout=8000)
 
-                        time.sleep(2)
+                        # 3. Dispara o seletor de arquivos de forma assíncrona/direta via Playwright (sem abrir janela do Windows)
+                        with page.expect_file_chooser(timeout=10000) as fc_info:
+                            item_fotos.click()
+                        file_chooser = fc_info.value
+                        file_chooser.set_files(caminho_temp)
 
-                        # Localiza o campo de LEGENDA na tela de pré-visualização da foto
-                        caption_box = page.locator('div[aria-placeholder*="legenda"], div[aria-label*="legenda"], div[data-tab="10"], div[data-tab="6"]').last
-                        if not caption_box.is_visible():
-                            caption_box = page.locator('div[contenteditable="true"]').last
+                        # 4. Aguarda a tela de prévia da foto abrir
+                        time.sleep(2.5)
 
-                        caption_box.wait_for(state="visible", timeout=15000)
-                        caption_box.click()
-                        time.sleep(1)
+                        # 5. Localiza a caixa de legenda específica da mídia (media-caption-input-container)
+                        caption_box = page.locator('[data-testid="media-caption-input-container"] [contenteditable="true"]').first
+                        if caption_box.count() == 0:
+                            for ed in page.locator('div[contenteditable="true"]').all():
+                                if ed.get_attribute("data-testid") != "conversation-compose-box-input":
+                                    caption_box = ed
+                                    break
 
-                        # Insere a mensagem da oferta como legenda da imagem
+                        if not caption_box or caption_box.count() == 0:
+                            caption_box = page.locator('div[contenteditable="true"][aria-label="Digite uma mensagem"]').first
+
+                        caption_box.wait_for(state="visible", timeout=10000)
+                        caption_box.focus()
+                        caption_box.click(force=True)
+                        time.sleep(0.5)
+
+                        # 6. Insere a mensagem completa da oferta NA LEGENDA DA FOTO
                         page.keyboard.insert_text(texto_mensagem)
-                        time.sleep(2)
+                        time.sleep(1.5)
 
-                        # Clica no botão de envio da mídia
-                        btn_enviar = page.locator('span[data-icon="send"], [aria-label*="Enviar"], [data-testid="send"]').last
+                        # 7. Envia a foto COM a legenda junta (mensagem única)
+                        btn_enviar = page.locator('span[data-icon="send"], [data-testid="send"], button[aria-label="Enviar"]').last
                         if btn_enviar.is_visible():
-                            btn_enviar.click()
+                            btn_enviar.click(force=True)
                         else:
-                            caption_box.press("Enter")
+                            page.keyboard.press("Enter")
 
-                        print("✅ Foto do produto postada com a mensagem completa na legenda!")
+                        time.sleep(2)
+                        # Se por ventura a tela de prévia ainda estiver aberta, envia com Enter
+                        if page.locator('button[aria-label="Fechar"], span[data-icon="x"]').is_visible():
+                            page.keyboard.press("Enter")
+                            time.sleep(2)
+
+                        print("✅ Foto do produto postada com a mensagem completa na legenda (mensagem única)!")
                         enviou_com_imagem = True
-                        time.sleep(4)
+                        time.sleep(3)
 
                     except Exception as e_img:
                         print(f"⚠️ Não foi possível enviar a foto com legenda ({e_img}). Tentando fallback em texto...")
                         try:
                             btn_fechar = page.locator('[aria-label="Fechar"], span[data-icon="x"]').first
                             if btn_fechar.is_visible():
-                                btn_fechar.click()
+                                btn_fechar.click(force=True)
                                 time.sleep(1)
                         except Exception:
                             pass
+                    finally:
+                        # Deleta o arquivo temporário imediatamente
+                        if caminho_temp and os.path.exists(caminho_temp):
+                            try:
+                                os.remove(caminho_temp)
+                            except Exception:
+                                pass
 
                 # 3. Fallback: se o envio da foto falhou, posta a mensagem em texto normal
                 if not enviou_com_imagem:

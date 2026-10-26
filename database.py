@@ -14,13 +14,14 @@ def get_connection():
 
 
 def init_db():
-    """Cria a tabela de ofertas se ela ainda não existir."""
+    """Cria a tabela de ofertas se ela ainda não existir e garante migrações necessárias."""
     query = """
     CREATE TABLE IF NOT EXISTS produtos_ofertas (
         asin TEXT PRIMARY KEY,
         titulo TEXT NOT NULL,
         link_afiliado TEXT NOT NULL,
         imagem_url TEXT,
+        imagem_blob MEDIUMBLOB,
         
         -- Preços e Desconto
         preco_atual REAL NOT NULL,
@@ -43,6 +44,12 @@ def init_db():
     with get_connection() as conn:
         cursor = conn.cursor()
         cursor.execute(query)
+        # Migração automática se a tabela já existia sem a coluna imagem_blob
+        try:
+            cursor.execute("ALTER TABLE produtos_ofertas ADD COLUMN imagem_blob MEDIUMBLOB;")
+        except sqlite3.OperationalError:
+            pass  # Coluna já existe
+
         # Índice para agilizar a busca de ofertas não postadas
         cursor.execute(
             "CREATE INDEX IF NOT EXISTS idx_ofertas_pendentes ON produtos_ofertas (postado, desconto_pct);"
@@ -57,14 +64,19 @@ def salvar_produto(produto: dict) -> bool:
     Se o produto já existir, atualiza preço, desconto e notas, 
     mas MANTÉM o status de postado para evitar duplicar envio no grupo.
     """
+    # Garante que imagem_blob tenha valor default se não fornecido
+    dados = dict(produto)
+    if "imagem_blob" not in dados:
+        dados["imagem_blob"] = None
+
     query = """
     INSERT INTO produtos_ofertas (
-        asin, titulo, link_afiliado, imagem_url,
+        asin, titulo, link_afiliado, imagem_url, imagem_blob,
         preco_atual, preco_original, desconto_pct,
         avaliacao_nota, avaliacao_qtd, vendas_mes,
         is_prime, badge, atualizado_em
     ) VALUES (
-        :asin, :titulo, :link_afiliado, :imagem_url,
+        :asin, :titulo, :link_afiliado, :imagem_url, :imagem_blob,
         :preco_atual, :preco_original, :desconto_pct,
         :avaliacao_nota, :avaliacao_qtd, :vendas_mes,
         :is_prime, :badge, datetime('now', 'localtime')
@@ -73,6 +85,7 @@ def salvar_produto(produto: dict) -> bool:
         titulo = excluded.titulo,
         link_afiliado = excluded.link_afiliado,
         imagem_url = excluded.imagem_url,
+        imagem_blob = COALESCE(excluded.imagem_blob, produtos_ofertas.imagem_blob),
         preco_atual = excluded.preco_atual,
         preco_original = excluded.preco_original,
         desconto_pct = excluded.desconto_pct,
@@ -86,12 +99,46 @@ def salvar_produto(produto: dict) -> bool:
     try:
         with get_connection() as conn:
             cursor = conn.cursor()
-            cursor.execute(query, produto)
+            cursor.execute(query, dados)
             conn.commit()
             return True
     except Exception as e:
         print(f"Erro ao salvar produto {produto.get('asin')}: {e}")
         return False
+
+
+def salvar_imagem_blob(asin: str, blob: bytes) -> bool:
+    """Salva os bytes da imagem (MEDIUMBLOB) diretamente no banco de dados para o produto."""
+    query = """
+    UPDATE produtos_ofertas
+    SET imagem_blob = ?,
+        atualizado_em = datetime('now', 'localtime')
+    WHERE asin = ?;
+    """
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (sqlite3.Binary(blob), asin))
+            conn.commit()
+            return True
+    except Exception as e:
+        print(f"Erro ao salvar imagem blob para {asin}: {e}")
+        return False
+
+
+def obter_imagem_blob(asin: str) -> bytes | None:
+    """Retorna os bytes da imagem (MEDIUMBLOB) armazenados no banco para o produto."""
+    query = "SELECT imagem_blob FROM produtos_ofertas WHERE asin = ?;"
+    try:
+        with get_connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(query, (asin,))
+            row = cursor.fetchone()
+            if row and row["imagem_blob"]:
+                return bytes(row["imagem_blob"])
+    except Exception as e:
+        print(f"Erro ao obter imagem blob para {asin}: {e}")
+    return None
 
 
 def obter_proxima_oferta(filtro_ouro: bool = True, intervalo_dias: int = 2):
