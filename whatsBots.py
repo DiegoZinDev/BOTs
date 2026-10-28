@@ -1,7 +1,6 @@
 import os
 import re
 import sys
-import tempfile
 import time
 import urllib.request
 from datetime import datetime, timedelta
@@ -144,6 +143,21 @@ def obter_ou_baixar_imagem_blob(asin: str, imagem_url_padrao: str, context=None)
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = resp.read()
 
+        # Se a imagem da galeria for apenas uma miniatura pequena (< 20KB) e tivermos a imagem principal, usa a principal
+        if data and len(data) < 20000 and imagem_url_padrao and url_final != obter_url_alta_resolucao(imagem_url_padrao):
+            try:
+                url_padrao_hr = obter_url_alta_resolucao(imagem_url_padrao)
+                req_padrao = urllib.request.Request(
+                    url_padrao_hr,
+                    headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+                )
+                with urllib.request.urlopen(req_padrao, timeout=15) as resp_p:
+                    data_padrao = resp_p.read()
+                if data_padrao and len(data_padrao) > len(data):
+                    data = data_padrao
+            except Exception:
+                pass
+
         if data and len(data) > 1000:
             # Salva os bytes diretamente no banco de dados SQLite (MEDIUMBLOB)
             salvar_imagem_blob(asin, data)
@@ -163,19 +177,33 @@ def obter_ou_baixar_imagem_blob(asin: str, imagem_url_padrao: str, context=None)
     return None
 
 
+def detectar_extensao_imagem(dados: bytes) -> str:
+    """Detecta a extensão real da imagem pelos magic bytes."""
+    if dados.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if dados.startswith(b"RIFF") and dados[8:12] == b"WEBP":
+        return ".webp"
+    return ".jpg"
+
+
 def iniciar_zap():
     with sync_playwright() as p:
         context = p.chromium.launch_persistent_context(
             user_data_dir=cookies,
             headless=False,
-            slow_mo=300
+            slow_mo=300,
+            args=[
+                "--disable-background-timer-throttling",
+                "--disable-backgrounding-occluded-windows",
+                "--disable-renderer-backgrounding",
+            ],
         )
-        
+
         page = context.pages[0] if context.pages else context.new_page()
-        
+
         print("Abrindo WhatsApp Web...")
         page.goto("https://web.whatsapp.com")
-        
+
         def type_in_chat() -> bool:
             try:
                 # Busca a melhor oferta que nunca foi postada OU postada há mais de 2 dias
@@ -196,29 +224,35 @@ def iniciar_zap():
                     context=context
                 )
 
+                # Garante que a aba do WhatsApp volte ao foco caso outra aba tenha sido aberta
+                page.bring_to_front()
+                page.wait_for_timeout(500)
+
                 # 2. Se temos a imagem em bytes, envia como FOTO com o texto na LEGENDA (mensagem única)
                 if imagem_bytes:
-                    caminho_temp = None
                     try:
                         print("📤 Anexando foto do produto com o texto da oferta na legenda...")
-                        
-                        if not page.locator('#main').is_visible():
-                            page.locator('#pane-side [role="row"]').first.click()
-                            time.sleep(1)
 
-                        # Cria um arquivo temporário descartável apenas para upload via navegador
-                        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                        if not page.locator('#main').first.is_visible():
+                            page.locator('#pane-side [role="row"]').first.click()
+                            page.wait_for_timeout(1000)
+
+                        # Salva em arquivo persistente no diretório data/ (sem deletar durante o upload no navegador)
+                        ext = detectar_extensao_imagem(imagem_bytes)
+                        pasta_temp = os.path.join(os.path.dirname(__file__), "data")
+                        os.makedirs(pasta_temp, exist_ok=True)
+                        caminho_temp = os.path.join(pasta_temp, f"temp_upload_atual{ext}")
+                        with open(caminho_temp, "wb") as tmp:
                             tmp.write(imagem_bytes)
-                            caminho_temp = tmp.name
 
                         # 1. Abre o menu de anexos (+) se necessário
                         btn_anexar = page.locator('#main footer button[aria-label*="Anexar"], #main footer button[title*="Anexar"], #main footer span[data-icon="plus"]').first
                         if btn_anexar.is_visible():
                             btn_anexar.click()
-                            time.sleep(1)
+                            page.wait_for_timeout(1000)
 
                         # 2. Localiza o botão "Fotos e vídeos" no menu
-                        item_fotos = page.locator('button').filter(has_text=re.compile(r"Fotos e v[ií]deos|Photos & videos", re.I)).first
+                        item_fotos = page.locator('button, li').filter(has_text=re.compile(r"Fotos e v[ií]deos|Photos & videos", re.I)).first
                         item_fotos.wait_for(state="visible", timeout=8000)
 
                         # 3. Dispara o seletor de arquivos de forma assíncrona/direta via Playwright (sem abrir janela do Windows)
@@ -228,10 +262,10 @@ def iniciar_zap():
                         file_chooser.set_files(caminho_temp)
 
                         # 4. Aguarda a tela de prévia da foto abrir
-                        time.sleep(2.5)
+                        page.wait_for_timeout(2500)
 
                         # 5. Localiza a caixa de legenda específica da mídia
-                        caption_box = page.locator('div[data-testid="media-caption-input-container"], div[contenteditable="true"][aria-label="Digite uma mensagem"]').first
+                        caption_box = page.locator('div[data-testid="media-caption-input-container"], div[contenteditable="true"][aria-label="Digite uma mensagem"], div[contenteditable="true"][aria-label="Adicione uma legenda"]').first
                         if caption_box.count() == 0:
                             for ed in page.locator('div[contenteditable="true"]').all():
                                 if ed.get_attribute("data-testid") != "conversation-compose-box-input":
@@ -241,15 +275,13 @@ def iniciar_zap():
                         caption_box.wait_for(state="visible", timeout=10000)
                         caption_box.focus()
                         caption_box.click(force=True)
-                        time.sleep(0.5)
+                        page.wait_for_timeout(500)
 
                         # Limpa qualquer rascunho anterior no campo
                         page.keyboard.press("Control+a")
                         page.keyboard.press("Backspace")
-                        time.sleep(0.3)
+                        page.wait_for_timeout(300)
 
-                        # 6. Insere a mensagem completa da oferta NA LEGENDA DA FOTO com Shift+Enter
-                        # (O Enter comum ou quebras \n no insert_text disparam o envio prematuro no WhatsApp Web)
                         linhas_msg = texto_mensagem.split("\n")
                         for idx_l, linha_txt in enumerate(linhas_msg):
                             if linha_txt:
@@ -257,56 +289,52 @@ def iniciar_zap():
                             if idx_l < len(linhas_msg) - 1:
                                 page.keyboard.press("Shift+Enter")
 
-                        time.sleep(1.5)
+                        page.wait_for_timeout(1500)
 
                         # 7. Envia a foto COM a legenda junta (mensagem única)
-                        btn_enviar = page.locator('span[data-icon="send"], [data-testid="send"], button[aria-label="Enviar"]').last
+                        btn_enviar = page.locator('div[role="button"][aria-label="Enviar"], button[aria-label="Enviar"], span[data-icon="send"], [data-testid="send"]').last
                         if btn_enviar.is_visible():
                             btn_enviar.click(force=True)
                         else:
                             page.keyboard.press("Enter")
 
-                        time.sleep(2)
-                        # Se por ventura a tela de prévia ainda estiver aberta, envia com Enter
-                        if page.locator('button[aria-label="Fechar"], span[data-icon="x"]').is_visible():
+                        page.wait_for_timeout(2000)
+                        # Se por ventura a caixa de legenda do modal ainda estiver aberta, envia com Enter
+                        if caption_box.is_visible():
                             page.keyboard.press("Enter")
-                            time.sleep(2)
+                            page.wait_for_timeout(2000)
+
+                        # Aguarda o upload da mídia para os servidores do WhatsApp finalizar
+                        print("⏳ Aguardando conclusão do upload da mídia no WhatsApp...")
+                        page.wait_for_timeout(6000)
 
                         print("✅ Foto do produto postada com a mensagem completa na legenda (mensagem única)!")
                         enviou_com_imagem = True
-                        time.sleep(3)
 
                     except Exception as e_img:
                         print(f"⚠️ Não foi possível enviar a foto com legenda ({e_img}). Tentando fallback em texto...")
                         try:
-                            btn_fechar = page.locator('[aria-label="Fechar"], span[data-icon="x"]').first
-                            if btn_fechar.is_visible():
-                                btn_fechar.click(force=True)
-                                time.sleep(1)
+                            # Fecha apenas eventual modal de prévia com Escape, sem clicar em ícones 'x' de mensagens em upload
+                            page.keyboard.press("Escape")
+                            page.wait_for_timeout(1000)
                         except Exception:
                             pass
-                    finally:
-                        # Deleta o arquivo temporário imediatamente
-                        if caminho_temp and os.path.exists(caminho_temp):
-                            try:
-                                os.remove(caminho_temp)
-                            except Exception:
-                                pass
 
                 # 3. Fallback: se o envio da foto falhou, posta a mensagem em texto normal
                 if not enviou_com_imagem:
-                    input_box = page.locator('#main [contenteditable="true"]')
+                    input_box = page.locator('#main footer [contenteditable="true"]').first
                     if not input_box.is_visible():
                         page.locator('#pane-side [role="row"]').first.click()
-                        time.sleep(1)
+                        page.wait_for_timeout(1000)
 
                     input_box.wait_for(state="visible", timeout=30000)
                     input_box.click()
-                    time.sleep(2)
-                    
+                    page.wait_for_timeout(2000)
+
                     page.keyboard.insert_text(texto_mensagem)
-                    time.sleep(8)
+                    page.wait_for_timeout(8000)
                     input_box.press("Enter")
+                    page.wait_for_timeout(3000)
                     print("✅ Mensagem enviada com sucesso no grupo!")
 
                 # Registra no banco de dados para bloquear repetição por 2 dias
@@ -319,10 +347,10 @@ def iniciar_zap():
 
         print("Aguardando carregamento das conversas...")
         page.wait_for_selector('#pane-side [role="row"]', state="visible", timeout=30000)
-        
+
         print("Abrindo a conversa...")
         page.locator('#pane-side [role="row"]').first.click()
-        time.sleep(2)
+        page.wait_for_timeout(2000)
 
         print(f"\n🚀 Bot de postagens iniciado! Ofertas serão postadas a cada {INTERVALO_POSTAGEM_MINUTOS} minutos.")
         print("Pressione Ctrl + C no terminal para encerrar o bot a qualquer momento.\n")
@@ -334,14 +362,19 @@ def iniciar_zap():
                     break
 
                 sucesso = type_in_chat()
-                
+
                 proximo_envio = (datetime.now() + timedelta(seconds=INTERVALO_POSTAGEM_SEGUNDOS)).strftime("%H:%M:%S")
                 if sucesso:
                     print(f"⏳ Próxima oferta agendada para: {proximo_envio} (daqui a {INTERVALO_POSTAGEM_MINUTOS} minutos).")
                 else:
-                    print(f"⏳ Nova tentativa agendada para: {proximo_envio} (daqui a {INTERVALO_POSTAGEM_MINUTOS} minutos).")
-                
-                time.sleep(INTERVALO_POSTAGEM_SEGUNDOS)
+                    print(f"⏳ Nova tentativa agendada para: {proximo_envio} (daqui a {INTERVALO_POSTAGEM_SEGUNDOS // 60} minutos).")
+
+                # Mantém o loop do Playwright ativo durante a espera de 10 minutos
+                segundos_restantes = INTERVALO_POSTAGEM_SEGUNDOS
+                while segundos_restantes > 0 and not page.is_closed():
+                    passo = min(5, segundos_restantes)
+                    page.wait_for_timeout(passo * 1000)
+                    segundos_restantes -= passo
         except KeyboardInterrupt:
             print("\n🛑 Bot interrompido pelo usuário.")
 

@@ -311,4 +311,4 @@ def raspar_busca(termo_busca: str, max_paginas: int = 10):
 
 if __name__ == "__main__":
     # Executa a busca paginando até a página 10
-    raspar_busca("perfumes masculinos importados", max_paginas=10)
+    raspar_busca("perfumes masculinos importados", max_paginas=25)
